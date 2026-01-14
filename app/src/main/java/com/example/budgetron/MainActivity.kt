@@ -1,6 +1,10 @@
 package com.example.budgetron
 
+import android.content.Context
+import android.content.Intent
 import android.os.Bundle
+import android.os.Environment
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -14,17 +18,24 @@ import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.budgetron.ui.theme.BudgetronTheme
+import kotlinx.coroutines.launch
+import java.io.File
+import java.io.FileOutputStream
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
@@ -61,29 +72,52 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BudgetApp(database: BudgetDatabase) {
+    val context = LocalContext.current
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+
+    // Use a state to trigger recalculation when returning from other activities
+    var refreshTrigger by remember { mutableStateOf(0) }
+
+    // Listen for lifecycle events to refresh data when returning to this activity
+    DisposableEffect(context) {
+        val lifecycleOwner = context as? ComponentActivity
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                // Trigger recalculation when activity resumes
+                refreshTrigger++
+            }
+        }
+        lifecycleOwner?.lifecycle?.addObserver(observer)
+        onDispose {
+            lifecycleOwner?.lifecycle?.removeObserver(observer)
+        }
+    }
+
     // Current viewing month
     var currentMonth by remember { mutableStateOf(YearMonth.now()) }
 
-    // Load daily allocation from database (default for new current month)
-    val defaultDailyAllocation = database.getDailyAllocation()
 
     // Load or initialize monthly data
     val monthKey = currentMonth.toString()
-    var monthlyData by remember(currentMonth) {
+    val currentYearMonth = YearMonth.now()
+
+    var monthlyData by remember(currentMonth, refreshTrigger) {
         mutableStateOf(
-            database.getMonthlyData(monthKey) ?: run {
-                // New months start with 0, except current month uses default
-                val initialAllocation = if (currentMonth == YearMonth.now()) {
-                    defaultDailyAllocation
-                } else {
-                    0.0
-                }
-                MonthlyData(monthKey, initialAllocation, 0.0)
+            if (currentMonth >= currentYearMonth) {
+                // For current and future months, ALWAYS recalculate from fixed expenses
+                // (ignore any previously saved allocation)
+                val calculatedAllocation = database.calculateDailyAllocation(currentMonth.lengthOfMonth())
+                val existingData = database.getMonthlyData(monthKey)
+                MonthlyData(monthKey, calculatedAllocation, existingData?.leftoverBudget ?: 0.0)
+            } else {
+                // For past months, use saved data or 0 if no data exists
+                database.getMonthlyData(monthKey) ?: MonthlyData(monthKey, 0.0, 0.0)
             }
         )
     }
 
-    var dailyAllocation by remember(currentMonth) {
+    var dailyAllocation by remember(currentMonth, refreshTrigger) {
         mutableStateOf(monthlyData.dailyAllocation)
     }
 
@@ -94,12 +128,12 @@ fun BudgetApp(database: BudgetDatabase) {
 
     var showAddExpenseDialog by remember { mutableStateOf(false) }
     var showSettingsDialog by remember { mutableStateOf(false) }
-    var showMonthAllocationDialog by remember { mutableStateOf(false) }
     var expenseToEdit by remember { mutableStateOf<Expense?>(null) }
+    var isAnalysisMode by remember { mutableStateOf(false) }
+    var showExportDialog by remember { mutableStateOf(false) }
 
     // Calculate current budget
     val today = LocalDate.now()
-    val currentYearMonth = YearMonth.now()
     val isCurrentMonth = currentMonth == currentYearMonth
     val isFutureMonth = currentMonth > currentYearMonth
 
@@ -120,60 +154,127 @@ fun BudgetApp(database: BudgetDatabase) {
         }
     }
 
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
-        topBar = {
-            TopAppBar(
-                title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        IconButton(onClick = {
-                            currentMonth = currentMonth.minusMonths(1)
-                        }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Previous Month")
-                        }
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet {
+                Column(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .padding(16.dp)
+                ) {
+                    Text(
+                        text = "Budgetron",
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(vertical = 16.dp)
+                    )
 
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.padding(horizontal = 8.dp)
-                        ) {
-                            Text(
-                                text = currentMonth.format(DateTimeFormatter.ofPattern("MMMM yyyy"))
-                            )
-                            TextButton(
-                                onClick = { showMonthAllocationDialog = true },
-                                contentPadding = PaddingValues(0.dp)
-                            ) {
-                                Text(
-                                    text = "$${"%.2f".format(dailyAllocation)}/day",
-                                    fontSize = 12.sp
-                                )
-                            }
-                        }
+                    HorizontalDivider()
 
-                        IconButton(onClick = {
-                            currentMonth = currentMonth.plusMonths(1)
-                        }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Next Month")
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    NavigationDrawerItem(
+                        icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                        label = { Text("Budget") },
+                        selected = false,
+                        onClick = {
+                            scope.launch { drawerState.close() }
                         }
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { showSettingsDialog = true }) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
-                    }
+                    )
+
+                    NavigationDrawerItem(
+                        icon = { Icon(Icons.Default.Info, contentDescription = null) },
+                        label = { Text("Stats") },
+                        selected = false,
+                        onClick = {
+                            scope.launch { drawerState.close() }
+                            val intent = Intent(context, StatsActivity::class.java)
+                            context.startActivity(intent)
+                        }
+                    )
+
+                    NavigationDrawerItem(
+                        icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                        label = { Text("Fixed Expenses") },
+                        selected = false,
+                        onClick = {
+                            scope.launch { drawerState.close() }
+                            val intent = Intent(context, FixedExpensesActivity::class.java)
+                            context.startActivity(intent)
+                        }
+                    )
+
+                    NavigationDrawerItem(
+                        icon = { Icon(Icons.Default.Share, contentDescription = null) },
+                        label = { Text("Export to CSV") },
+                        selected = false,
+                        onClick = {
+                            scope.launch { drawerState.close() }
+                            showExportDialog = true
+                        }
+                    )
                 }
-            )
-        },
-        floatingActionButton = {
-            FloatingActionButton(onClick = { showAddExpenseDialog = true }) {
-                Icon(Icons.Default.Add, contentDescription = "Add Expense")
             }
         }
-    ) { innerPadding ->
+    ) {
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            topBar = {
+                TopAppBar(
+                    title = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            IconButton(onClick = {
+                                currentMonth = currentMonth.minusMonths(1)
+                            }) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Previous Month")
+                            }
+
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier.padding(horizontal = 8.dp)
+                            ) {
+                                Text(
+                                    text = currentMonth.format(DateTimeFormatter.ofPattern("MMMM yyyy"))
+                                )
+                                Text(
+                                    text = "$${"%.2f".format(dailyAllocation)}/day",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+
+                            IconButton(onClick = {
+                                currentMonth = currentMonth.plusMonths(1)
+                            }) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Next Month")
+                            }
+                        }
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = {
+                            scope.launch { drawerState.open() }
+                        }) {
+                            Icon(Icons.Default.Menu, contentDescription = "Menu")
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = { showSettingsDialog = true }) {
+                            Icon(Icons.Default.Settings, contentDescription = "Settings")
+                        }
+                    }
+                )
+            },
+            floatingActionButton = {
+                FloatingActionButton(onClick = { showAddExpenseDialog = true }) {
+                    Icon(Icons.Default.Add, contentDescription = "Add Expense")
+                }
+            }
+        ) { innerPadding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -190,79 +291,256 @@ fun BudgetApp(database: BudgetDatabase) {
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // Expenses List
-            Text(
-                text = "Expenses This Month",
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(bottom = 8.dp)
-            )
+            if (isAnalysisMode) {
+                // Category Analysis View
+                CategoryAnalysis(expenses = expenses)
+            } else {
+                // Expenses List
+                Text(
+                    text = "Expenses This Month",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
 
-            LazyColumn(
-                modifier = Modifier.fillMaxSize().padding(0.dp, 35.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize().padding(0.dp, 0.dp, 0.dp, 35.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
 
-            ) {
-                items(expenses.sortedByDescending { it.date }) { expense ->
-                    ExpenseItem(
-                        expense = expense,
-                        onEdit = { expenseToEdit = expense },
-                        onDelete = {
-                            database.deleteExpense(expense.id)
-                            expenses = database.getExpensesForMonth(monthKey)
-                        }
-                    )
+                ) {
+                    items(expenses.sortedByDescending { it.date }) { expense ->
+                        ExpenseItem(
+                            expense = expense,
+                            onEdit = { expenseToEdit = expense },
+                            onDelete = {
+                                database.deleteExpense(expense.id)
+                                expenses = database.getExpensesForMonth(monthKey)
+                            }
+                        )
+                    }
                 }
             }
         }
     }
 
-    if (showAddExpenseDialog) {
-        AddExpenseDialog(
-            onDismiss = { showAddExpenseDialog = false },
-            onAddExpense = { expense ->
-                database.addExpense(expense)
-                expenses = database.getExpensesForMonth(monthKey)
-                showAddExpenseDialog = false
-            }
-        )
-    }
+        if (showAddExpenseDialog) {
+            AddExpenseDialog(
+                onDismiss = { showAddExpenseDialog = false },
+                onAddExpense = { expense ->
+                    database.addExpense(expense)
+                    expenses = database.getExpensesForMonth(monthKey)
+                    showAddExpenseDialog = false
+                }
+            )
+        }
 
-    expenseToEdit?.let { expense ->
-        EditExpenseDialog(
-            expense = expense,
-            onDismiss = { expenseToEdit = null },
-            onSave = { updatedExpense ->
-                database.updateExpense(updatedExpense)
-                expenses = database.getExpensesForMonth(monthKey)
-                expenseToEdit = null
-            }
-        )
-    }
+        expenseToEdit?.let { expense ->
+            EditExpenseDialog(
+                expense = expense,
+                onDismiss = { expenseToEdit = null },
+                onSave = { updatedExpense ->
+                    database.updateExpense(updatedExpense)
+                    expenses = database.getExpensesForMonth(monthKey)
+                    expenseToEdit = null
+                }
+            )
+        }
 
-    if (showSettingsDialog) {
-        SettingsDialog(
-            currentAllocation = dailyAllocation,
-            onDismiss = { showSettingsDialog = false },
-            onSave = { newAllocation ->
-                database.updateDailyAllocation(newAllocation)
-                dailyAllocation = newAllocation
-                showSettingsDialog = false
-            }
-        )
-    }
+        if (showSettingsDialog) {
+            SettingsDialog(
+                isAnalysisMode = isAnalysisMode,
+                onDismiss = { showSettingsDialog = false },
+                onToggleAnalysisMode = {
+                    isAnalysisMode = it
+                    showSettingsDialog = false
+                }
+            )
+        }
 
-    if (showMonthAllocationDialog) {
-        MonthAllocationDialog(
-            month = currentMonth,
-            currentAllocation = dailyAllocation,
-            onDismiss = { showMonthAllocationDialog = false },
-            onSave = { newAllocation ->
-                dailyAllocation = newAllocation
-                database.saveMonthlyData(monthKey, newAllocation, currentBudget)
-                showMonthAllocationDialog = false
-            }
+
+        if (showExportDialog) {
+            ExportConfirmationDialog(
+                onDismiss = { showExportDialog = false },
+                onConfirm = {
+                    exportExpensesToCSV(context, database)
+                    showExportDialog = false
+                }
+            )
+        }
+    }
+}
+
+@Composable
+fun CategoryAnalysis(expenses: List<Expense>) {
+    val totalSpent = expenses.sumOf { it.amount }
+
+    // Group expenses by category
+    val expensesByCategory = expenses.groupBy { it.category }
+
+    // Create sorted list with totals
+    val categoryData = expensesByCategory.map { (category, categoryExpenses) ->
+        Triple(category, categoryExpenses.sumOf { it.amount }, categoryExpenses)
+    }.sortedByDescending { it.second }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Text(
+            text = "Category Analysis",
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(bottom = 8.dp)
         )
+
+        if (categoryData.isEmpty()) {
+            Text(
+                text = "No expenses this month",
+                fontSize = 16.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(16.dp)
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize().padding(0.dp, 0.dp, 0.dp, 35.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(categoryData) { (category, amount, categoryExpenses) ->
+                    CategoryItem(
+                        category = category,
+                        amount = amount,
+                        percentage = if (totalSpent > 0) (amount / totalSpent) * 100 else 0.0,
+                        expenses = categoryExpenses
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun CategoryItem(
+    category: String,
+    amount: Double,
+    percentage: Double,
+    expenses: List<Expense>
+) {
+    var isExpanded by remember { mutableStateOf(false) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        onClick = { isExpanded = !isExpanded }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = category,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp
+                        )
+                        Text(
+                            text = "(${expenses.size})",
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Text(
+                        text = "${"%.1f".format(percentage)}% of total",
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                Text(
+                    text = "$${String.format(Locale.US, "%.2f", amount)}",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.Red
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Progress bar showing percentage
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(8.dp)
+            ) {
+                // Background bar
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(8.dp)
+                        .padding(0.dp)
+                ) {
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = MaterialTheme.shapes.small
+                    ) {}
+                }
+
+                // Filled bar (from left to right)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(fraction = (percentage / 100).toFloat())
+                        .height(8.dp)
+                ) {
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = Color.Red,
+                        shape = MaterialTheme.shapes.small
+                    ) {}
+                }
+            }
+
+            // Expanded expense list
+            if (isExpanded) {
+                Spacer(modifier = Modifier.height(12.dp))
+                HorizontalDivider()
+                Spacer(modifier = Modifier.height(8.dp))
+
+                expenses.sortedByDescending { it.date }.forEach { expense ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = expense.name,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = expense.date.format(DateTimeFormatter.ofPattern("MMM dd, yyyy")),
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Text(
+                            text = "$${String.format(Locale.US, "%.2f", expense.amount)}",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.Red
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -637,101 +915,42 @@ fun EditExpenseDialog(
 
 @Composable
 fun SettingsDialog(
-    currentAllocation: Double,
+    isAnalysisMode: Boolean,
     onDismiss: () -> Unit,
-    onSave: (Double) -> Unit
+    onToggleAnalysisMode: (Boolean) -> Unit
 ) {
-    var allocation by remember { mutableStateOf(currentAllocation.toString()) }
-
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Default Settings") },
+        title = { Text("Settings") },
         text = {
             Column {
-                Text(
-                    text = "Set the default daily allocation for new current months. Use the month editor to change specific months.",
-                    modifier = Modifier.padding(bottom = 8.dp)
-                )
-                OutlinedTextField(
-                    value = allocation,
-                    onValueChange = { allocation = it },
-                    label = { Text("Daily Allocation") },
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    prefix = { Text("$") },
-                    singleLine = true
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(text = "Analysis Mode")
+                    Switch(
+                        checked = isAnalysisMode,
+                        onCheckedChange = { onToggleAnalysisMode(it) }
+                    )
+                }
+                Text(
+                    text = "View expenses grouped by category with percentages.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp)
                 )
             }
         },
         confirmButton = {
-            TextButton(
-                onClick = {
-                    val allocationDouble = allocation.toDoubleOrNull()
-                    if (allocationDouble != null && allocationDouble > 0) {
-                        onSave(allocationDouble)
-                    }
-                }
-            ) {
-                Text("Save")
-            }
-        },
-        dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel")
+                Text("Close")
             }
         }
     )
 }
 
-@Composable
-fun MonthAllocationDialog(
-    month: YearMonth,
-    currentAllocation: Double,
-    onDismiss: () -> Unit,
-    onSave: (Double) -> Unit
-) {
-    var allocation by remember { mutableStateOf(currentAllocation.toString()) }
-    val monthName = month.format(DateTimeFormatter.ofPattern("MMMM yyyy"))
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Set Allocation for $monthName") },
-        text = {
-            Column {
-                Text(
-                    text = "Set the daily allocation for this month.",
-                    modifier = Modifier.padding(bottom = 8.dp)
-                )
-                OutlinedTextField(
-                    value = allocation,
-                    onValueChange = { allocation = it },
-                    label = { Text("Daily Allocation") },
-                    modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    prefix = { Text("$") },
-                    singleLine = true
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    val allocationDouble = allocation.toDoubleOrNull()
-                    if (allocationDouble != null && allocationDouble >= 0) {
-                        onSave(allocationDouble)
-                    }
-                }
-            ) {
-                Text("Save")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
-        }
-    )
-}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -765,6 +984,77 @@ fun DatePickerDialog(
         }
     ) {
         DatePicker(state = datePickerState)
+    }
+}
+
+@Composable
+fun ExportConfirmationDialog(
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Export Expenses") },
+        text = {
+            Text("Export all expenses to a CSV file? The file will be saved to your Downloads folder.")
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Export")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+fun exportExpensesToCSV(context: Context, database: BudgetDatabase) {
+    try {
+        val expenses = database.getAllExpenses()
+
+        if (expenses.isEmpty()) {
+            Toast.makeText(context, "No expenses to export", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // Create CSV content
+        val csvHeader = "ID,Name,Amount,Category,Date\n"
+        val csvContent = StringBuilder(csvHeader)
+
+        expenses.forEach { expense ->
+            csvContent.append("\"${expense.id}\",")
+            csvContent.append("\"${expense.name}\",")
+            csvContent.append("${expense.amount},")
+            csvContent.append("\"${expense.category}\",")
+            csvContent.append("\"${expense.date}\"\n")
+        }
+
+        // Save to Downloads folder
+        val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        val timestamp = System.currentTimeMillis()
+        val fileName = "budgetron_expenses_$timestamp.csv"
+        val file = File(downloadsDir, fileName)
+
+        FileOutputStream(file).use { outputStream ->
+            outputStream.write(csvContent.toString().toByteArray())
+        }
+
+        Toast.makeText(
+            context,
+            "Exported ${expenses.size} expenses to Downloads/$fileName",
+            Toast.LENGTH_LONG
+        ).show()
+
+    } catch (e: Exception) {
+        Toast.makeText(
+            context,
+            "Error exporting: ${e.message}",
+            Toast.LENGTH_LONG
+        ).show()
+        e.printStackTrace()
     }
 }
 
