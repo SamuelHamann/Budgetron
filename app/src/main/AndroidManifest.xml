@@ -22,6 +22,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".StatsActivity"
+            android:exported="false"
+            android:label="Statistics"
+            android:theme="@style/Theme.Budgetron" />
+        <activity
+            android:name=".FixedExpensesActivity"
+            android:exported="false"
+            android:label="Fixed Expenses"
+            android:theme="@style/Theme.Budgetron" />
     </application>
 
 </manifest>
