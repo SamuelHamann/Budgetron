@@ -153,6 +153,14 @@ fun GeneralStatsSection(
     // Average expense amount
     val avgExpenseAmount = if (expenses.isNotEmpty()) totalSpent / expenses.size else 0.0
 
+    // Get current month
+    val currentMonth = YearMonth.now().toString()
+
+    // Total leftover budget from past months only (excluding current month)
+    val totalPastLeftover = monthlyData
+        .filter { it.month != currentMonth }
+        .sumOf { it.leftoverBudget }
+
     // Total leftover budget from all months with expenses
     val monthsWithExpenses = expenses.map {
         YearMonth.of(it.date.year, it.date.month).toString()
@@ -193,6 +201,27 @@ fun GeneralStatsSection(
             }
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+            // Past months leftover budget display (excluding current month)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "Past Month's Leftover",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+                Text(
+                    text = "$${String.format(Locale.US, "%.2f", totalPastLeftover)}",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (totalPastLeftover >= 0) Color.Green else Color.Red
+                )
+            }
 
             // Total leftover budget display
             Row(
