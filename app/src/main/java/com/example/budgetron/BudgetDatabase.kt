@@ -9,7 +9,7 @@ class BudgetDatabase(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
 
     companion object {
         private const val DATABASE_NAME = "budgetron.db"
-        private const val DATABASE_VERSION = 3
+        private const val DATABASE_VERSION = 5
 
         // Settings table
         private const val TABLE_SETTINGS = "settings"
@@ -24,6 +24,7 @@ class BudgetDatabase(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         private const val COLUMN_AMOUNT = "amount"
         private const val COLUMN_CATEGORY = "category"
         private const val COLUMN_DATE = "date"
+        private const val COLUMN_PAID_FROM_EARNINGS = "paid_from_earnings"
 
         // Monthly data table
         private const val TABLE_MONTHLY_DATA = "monthly_data"
@@ -36,6 +37,13 @@ class BudgetDatabase(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         private const val COLUMN_FIXED_EXPENSE_ID = "id"
         private const val COLUMN_FIXED_NAME = "name"
         private const val COLUMN_FIXED_AMOUNT = "amount"
+
+        // Earnings table
+        private const val TABLE_EARNINGS = "earnings"
+        private const val COLUMN_EARNING_ID = "id"
+        private const val COLUMN_EARNING_NAME = "name"
+        private const val COLUMN_EARNING_AMOUNT = "amount"
+        private const val COLUMN_EARNING_DATE = "date"
     }
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -64,7 +72,8 @@ class BudgetDatabase(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 $COLUMN_NAME TEXT NOT NULL,
                 $COLUMN_AMOUNT REAL NOT NULL,
                 $COLUMN_CATEGORY TEXT NOT NULL,
-                $COLUMN_DATE TEXT NOT NULL
+                $COLUMN_DATE TEXT NOT NULL,
+                $COLUMN_PAID_FROM_EARNINGS INTEGER NOT NULL DEFAULT 0
             )
         """.trimIndent()
         db.execSQL(createExpensesTable)
@@ -88,6 +97,17 @@ class BudgetDatabase(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             )
         """.trimIndent()
         db.execSQL(createFixedExpensesTable)
+
+        // Create earnings table
+        val createEarningsTable = """
+            CREATE TABLE $TABLE_EARNINGS (
+                $COLUMN_EARNING_ID TEXT PRIMARY KEY,
+                $COLUMN_EARNING_NAME TEXT NOT NULL,
+                $COLUMN_EARNING_AMOUNT REAL NOT NULL,
+                $COLUMN_EARNING_DATE TEXT NOT NULL
+            )
+        """.trimIndent()
+        db.execSQL(createEarningsTable)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -115,6 +135,22 @@ class BudgetDatabase(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
                 )
             """.trimIndent()
             db.execSQL(createFixedExpensesTable)
+        }
+        if (oldVersion < 4) {
+            // Create earnings table
+            val createEarningsTable = """
+                CREATE TABLE $TABLE_EARNINGS (
+                    $COLUMN_EARNING_ID TEXT PRIMARY KEY,
+                    $COLUMN_EARNING_NAME TEXT NOT NULL,
+                    $COLUMN_EARNING_AMOUNT REAL NOT NULL,
+                    $COLUMN_EARNING_DATE TEXT NOT NULL
+                )
+            """.trimIndent()
+            db.execSQL(createEarningsTable)
+        }
+        if (oldVersion < 5) {
+            // Add paid_from_earnings column to expenses table
+            db.execSQL("ALTER TABLE $TABLE_EXPENSES ADD COLUMN $COLUMN_PAID_FROM_EARNINGS INTEGER NOT NULL DEFAULT 0")
         }
     }
 
@@ -164,6 +200,7 @@ class BudgetDatabase(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             put(COLUMN_AMOUNT, expense.amount)
             put(COLUMN_CATEGORY, expense.category)
             put(COLUMN_DATE, expense.date.toString())
+            put(COLUMN_PAID_FROM_EARNINGS, if (expense.paidFromEarnings) 1 else 0)
         }
 
         val result = db.insert(TABLE_EXPENSES, null, values)
@@ -178,6 +215,7 @@ class BudgetDatabase(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             put(COLUMN_AMOUNT, expense.amount)
             put(COLUMN_CATEGORY, expense.category)
             put(COLUMN_DATE, expense.date.toString())
+            put(COLUMN_PAID_FROM_EARNINGS, if (expense.paidFromEarnings) 1 else 0)
         }
 
         val rowsAffected = db.update(
@@ -195,7 +233,7 @@ class BudgetDatabase(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         val db = readableDatabase
         val cursor = db.query(
             TABLE_EXPENSES,
-            arrayOf(COLUMN_EXPENSE_ID, COLUMN_NAME, COLUMN_AMOUNT, COLUMN_CATEGORY, COLUMN_DATE),
+            arrayOf(COLUMN_EXPENSE_ID, COLUMN_NAME, COLUMN_AMOUNT, COLUMN_CATEGORY, COLUMN_DATE, COLUMN_PAID_FROM_EARNINGS),
             null,
             null,
             null,
@@ -210,8 +248,9 @@ class BudgetDatabase(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             val category = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_CATEGORY))
             val dateStr = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_DATE))
             val date = java.time.LocalDate.parse(dateStr)
+            val paidFromEarnings = cursor.getInt(cursor.getColumnIndexOrThrow(COLUMN_PAID_FROM_EARNINGS)) == 1
 
-            expenses.add(Expense(id, name, amount, category, date))
+            expenses.add(Expense(id, name, amount, category, date, paidFromEarnings))
         }
         cursor.close()
         return expenses
@@ -276,7 +315,7 @@ class BudgetDatabase(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
         val db = readableDatabase
         val cursor = db.query(
             TABLE_EXPENSES,
-            arrayOf(COLUMN_EXPENSE_ID, COLUMN_NAME, COLUMN_AMOUNT, COLUMN_CATEGORY, COLUMN_DATE),
+            arrayOf(COLUMN_EXPENSE_ID, COLUMN_NAME, COLUMN_AMOUNT, COLUMN_CATEGORY, COLUMN_DATE, COLUMN_PAID_FROM_EARNINGS),
             "$COLUMN_DATE LIKE ?",
             arrayOf("$yearMonth%"),
             null,
@@ -291,8 +330,9 @@ class BudgetDatabase(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             val category = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_CATEGORY))
             val dateStr = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_DATE))
             val date = java.time.LocalDate.parse(dateStr)
+            val paidFromEarnings = cursor.getInt(cursor.getColumnIndexOrThrow(COLUMN_PAID_FROM_EARNINGS)) == 1
 
-            expenses.add(Expense(id, name, amount, category, date))
+            expenses.add(Expense(id, name, amount, category, date, paidFromEarnings))
         }
         cursor.close()
         return expenses
@@ -436,6 +476,103 @@ class BudgetDatabase(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME
             0.0
         }
     }
+
+    // Add earning
+    fun addEarning(earning: Earning): Boolean {
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            put(COLUMN_EARNING_ID, earning.id)
+            put(COLUMN_EARNING_NAME, earning.name)
+            put(COLUMN_EARNING_AMOUNT, earning.amount)
+            put(COLUMN_EARNING_DATE, earning.date.toString())
+        }
+
+        val result = db.insert(TABLE_EARNINGS, null, values)
+        return result != -1L
+    }
+
+    // Get all earnings
+    fun getAllEarnings(): List<Earning> {
+        val earnings = mutableListOf<Earning>()
+        val db = readableDatabase
+        val cursor = db.query(
+            TABLE_EARNINGS,
+            arrayOf(COLUMN_EARNING_ID, COLUMN_EARNING_NAME, COLUMN_EARNING_AMOUNT, COLUMN_EARNING_DATE),
+            null,
+            null,
+            null,
+            null,
+            "$COLUMN_EARNING_DATE DESC"
+        )
+
+        while (cursor.moveToNext()) {
+            val id = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_EARNING_ID))
+            val name = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_EARNING_NAME))
+            val amount = cursor.getDouble(cursor.getColumnIndexOrThrow(COLUMN_EARNING_AMOUNT))
+            val dateStr = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_EARNING_DATE))
+            val date = java.time.LocalDate.parse(dateStr)
+
+            earnings.add(Earning(id, name, amount, date))
+        }
+        cursor.close()
+        return earnings
+    }
+
+    // Get earnings for a specific month
+    fun getEarningsForMonth(yearMonth: String): List<Earning> {
+        val earnings = mutableListOf<Earning>()
+        val db = readableDatabase
+        val cursor = db.query(
+            TABLE_EARNINGS,
+            arrayOf(COLUMN_EARNING_ID, COLUMN_EARNING_NAME, COLUMN_EARNING_AMOUNT, COLUMN_EARNING_DATE),
+            "$COLUMN_EARNING_DATE LIKE ?",
+            arrayOf("$yearMonth%"),
+            null,
+            null,
+            "$COLUMN_EARNING_DATE DESC"
+        )
+
+        while (cursor.moveToNext()) {
+            val id = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_EARNING_ID))
+            val name = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_EARNING_NAME))
+            val amount = cursor.getDouble(cursor.getColumnIndexOrThrow(COLUMN_EARNING_AMOUNT))
+            val dateStr = cursor.getString(cursor.getColumnIndexOrThrow(COLUMN_EARNING_DATE))
+            val date = java.time.LocalDate.parse(dateStr)
+
+            earnings.add(Earning(id, name, amount, date))
+        }
+        cursor.close()
+        return earnings
+    }
+
+    // Update earning
+    fun updateEarning(earning: Earning): Boolean {
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            put(COLUMN_EARNING_NAME, earning.name)
+            put(COLUMN_EARNING_AMOUNT, earning.amount)
+            put(COLUMN_EARNING_DATE, earning.date.toString())
+        }
+
+        val rowsAffected = db.update(
+            TABLE_EARNINGS,
+            values,
+            "$COLUMN_EARNING_ID = ?",
+            arrayOf(earning.id)
+        )
+        return rowsAffected > 0
+    }
+
+    // Delete earning
+    fun deleteEarning(earningId: String): Boolean {
+        val db = writableDatabase
+        val rowsDeleted = db.delete(
+            TABLE_EARNINGS,
+            "$COLUMN_EARNING_ID = ?",
+            arrayOf(earningId)
+        )
+        return rowsDeleted > 0
+    }
 }
 
 data class MonthlyData(
@@ -450,3 +587,9 @@ data class FixedExpense(
     val amount: Double
 )
 
+data class Earning(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val name: String,
+    val amount: Double,
+    val date: java.time.LocalDate = java.time.LocalDate.now()
+)

@@ -46,7 +46,8 @@ data class Expense(
     val name: String,
     val amount: Double,
     val category: String,
-    val date: LocalDate = LocalDate.now()
+    val date: LocalDate = LocalDate.now(),
+    val paidFromEarnings: Boolean = false
 )
 
 class MainActivity : ComponentActivity() {
@@ -126,9 +127,17 @@ fun BudgetApp(database: BudgetDatabase) {
         mutableStateOf(database.getExpensesForMonth(monthKey))
     }
 
+    // Load earnings for current month from database
+    var earnings by remember(currentMonth) {
+        mutableStateOf(database.getEarningsForMonth(monthKey))
+    }
+
     var showAddExpenseDialog by remember { mutableStateOf(false) }
+    var showChoiceDialog by remember { mutableStateOf(false) }
+    var showAddEarningDialog by remember { mutableStateOf(false) }
     var showSettingsDialog by remember { mutableStateOf(false) }
     var expenseToEdit by remember { mutableStateOf<Expense?>(null) }
+    var earningToEdit by remember { mutableStateOf<Earning?>(null) }
     var isAnalysisMode by remember { mutableStateOf(false) }
     var showExportDialog by remember { mutableStateOf(false) }
 
@@ -144,7 +153,10 @@ fun BudgetApp(database: BudgetDatabase) {
     }
 
     val allowedBudget = dayOfMonth * dailyAllocation
-    val totalSpent = expenses.sumOf { it.amount }
+    val totalSpent = expenses.filter { !it.paidFromEarnings }.sumOf { it.amount }
+    val totalSpentFromEarnings = expenses.filter { it.paidFromEarnings }.sumOf { it.amount }
+    val totalEarnings = earnings.sumOf { it.amount }
+    val remainingEarnings = totalEarnings - totalSpentFromEarnings
     val currentBudget = allowedBudget - totalSpent
 
     // Save monthly data when month changes or when navigating away from current month
@@ -270,8 +282,8 @@ fun BudgetApp(database: BudgetDatabase) {
                 )
             },
             floatingActionButton = {
-                FloatingActionButton(onClick = { showAddExpenseDialog = true }) {
-                    Icon(Icons.Default.Add, contentDescription = "Add Expense")
+                FloatingActionButton(onClick = { showChoiceDialog = true }) {
+                    Icon(Icons.Default.Add, contentDescription = "Add Item")
                 }
             }
         ) { innerPadding ->
@@ -286,6 +298,8 @@ fun BudgetApp(database: BudgetDatabase) {
                 currentBudget = currentBudget,
                 allowedBudget = allowedBudget,
                 totalSpent = totalSpent,
+                totalEarnings = totalEarnings,
+                remainingEarnings = remainingEarnings,
                 dayOfMonth = dayOfMonth
             )
 
@@ -297,7 +311,7 @@ fun BudgetApp(database: BudgetDatabase) {
             } else {
                 // Expenses List
                 Text(
-                    text = "Expenses This Month",
+                    text = "Expenses & Earnings This Month",
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.padding(bottom = 8.dp)
@@ -308,20 +322,56 @@ fun BudgetApp(database: BudgetDatabase) {
                     verticalArrangement = Arrangement.spacedBy(8.dp)
 
                 ) {
-                    items(expenses.sortedByDescending { it.date }) { expense ->
-                        ExpenseItem(
-                            expense = expense,
-                            onEdit = { expenseToEdit = expense },
-                            onDelete = {
-                                database.deleteExpense(expense.id)
-                                expenses = database.getExpensesForMonth(monthKey)
+                    // Combine expenses and earnings
+                    val combinedItems = expenses.map { Triple("expense", it.date, it as Any) } +
+                            earnings.map { Triple("earning", it.date, it as Any) }
+
+                    val sortedItems = combinedItems.sortedByDescending { it.second }
+
+                    items(sortedItems) { (type, _, item) ->
+                        when (type) {
+                            "expense" -> {
+                                val expense = item as Expense
+                                ExpenseItem(
+                                    expense = expense,
+                                    onEdit = { expenseToEdit = expense },
+                                    onDelete = {
+                                        database.deleteExpense(expense.id)
+                                        expenses = database.getExpensesForMonth(monthKey)
+                                    }
+                                )
                             }
-                        )
+                            "earning" -> {
+                                val earning = item as Earning
+                                EarningItem(
+                                    earning = earning,
+                                    onEdit = { earningToEdit = earning },
+                                    onDelete = {
+                                        database.deleteEarning(earning.id)
+                                        earnings = database.getEarningsForMonth(monthKey)
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
             }
         }
     }
+
+    if (showChoiceDialog) {
+            ChoiceDialog(
+                onDismiss = { showChoiceDialog = false },
+                onExpenseSelected = {
+                    showChoiceDialog = false
+                    showAddExpenseDialog = true
+                },
+                onEarningSelected = {
+                    showChoiceDialog = false
+                    showAddEarningDialog = true
+                }
+            )
+        }
 
         if (showAddExpenseDialog) {
             AddExpenseDialog(
@@ -330,6 +380,17 @@ fun BudgetApp(database: BudgetDatabase) {
                     database.addExpense(expense)
                     expenses = database.getExpensesForMonth(monthKey)
                     showAddExpenseDialog = false
+                }
+            )
+        }
+
+        if (showAddEarningDialog) {
+            AddEarningDialog(
+                onDismiss = { showAddEarningDialog = false },
+                onAddEarning = { earning ->
+                    database.addEarning(earning)
+                    earnings = database.getEarningsForMonth(monthKey)
+                    showAddEarningDialog = false
                 }
             )
         }
@@ -346,13 +407,24 @@ fun BudgetApp(database: BudgetDatabase) {
             )
         }
 
+        earningToEdit?.let { earning ->
+            EditEarningDialog(
+                earning = earning,
+                onDismiss = { earningToEdit = null },
+                onSave = { updatedEarning ->
+                    database.updateEarning(updatedEarning)
+                    earnings = database.getEarningsForMonth(monthKey)
+                    earningToEdit = null
+                }
+            )
+        }
+
         if (showSettingsDialog) {
             SettingsDialog(
                 isAnalysisMode = isAnalysisMode,
                 onDismiss = { showSettingsDialog = false },
                 onToggleAnalysisMode = {
                     isAnalysisMode = it
-                    showSettingsDialog = false
                 }
             )
         }
@@ -549,6 +621,8 @@ fun BudgetDisplay(
     currentBudget: Double,
     allowedBudget: Double,
     totalSpent: Double,
+    totalEarnings: Double,
+    remainingEarnings: Double,
     dayOfMonth: Int
 ) {
     Card(
@@ -595,8 +669,20 @@ fun BudgetDisplay(
                     Text(
                         text = "$${String.format(Locale.US, "%.2f", totalSpent)}",
                         fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        color = Color.Red
                     )
+                }
+
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(text = "Earnings", fontSize = 12.sp)
+                    Text(
+                        text = "$${String.format(Locale.US, "%.2f", remainingEarnings)}",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF2E7D32)
+                    )
+                    Text(text = "of $${String.format(Locale.US, "%.2f", totalEarnings)}", fontSize = 10.sp)
                 }
             }
         }
@@ -630,11 +716,24 @@ fun ExpenseItem(
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Text(
-                    text = expense.date.format(DateTimeFormatter.ofPattern("MMM dd")),
-                    fontSize = 10.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = expense.date.format(DateTimeFormatter.ofPattern("MMM dd")),
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (expense.paidFromEarnings) {
+                        Text(
+                            text = "• Paid from earnings",
+                            fontSize = 10.sp,
+                            color = Color(0xFF2E7D32),
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
             }
 
             Row(
@@ -686,6 +785,7 @@ fun AddExpenseDialog(
     var selectedDate by remember { mutableStateOf(LocalDate.now()) }
     var expanded by remember { mutableStateOf(false) }
     var showDatePicker by remember { mutableStateOf(false) }
+    var paidFromEarnings by remember { mutableStateOf(false) }
 
     val categories = listOf("Leisure", "Groceries", "Eating Out", "Transportation", "Shopping", "Bills", "Other")
     val dateFormatter = DateTimeFormatter.ofPattern("MMM dd, yyyy")
@@ -753,6 +853,21 @@ fun AddExpenseDialog(
                 ) {
                     Text("Date: ${selectedDate.format(dateFormatter)}")
                 }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Pay from earnings",
+                        fontSize = 14.sp
+                    )
+                    Checkbox(
+                        checked = paidFromEarnings,
+                        onCheckedChange = { paidFromEarnings = it }
+                    )
+                }
             }
         },
         confirmButton = {
@@ -765,7 +880,8 @@ fun AddExpenseDialog(
                                 name = name,
                                 amount = amountDouble,
                                 category = category,
-                                date = selectedDate
+                                date = selectedDate,
+                                paidFromEarnings = paidFromEarnings
                             )
                         )
                     }
@@ -806,6 +922,7 @@ fun EditExpenseDialog(
     var selectedDate by remember { mutableStateOf(expense.date) }
     var expanded by remember { mutableStateOf(false) }
     var showDatePicker by remember { mutableStateOf(false) }
+    var paidFromEarnings by remember { mutableStateOf(expense.paidFromEarnings) }
 
     val categories = listOf("Leisure", "Groceries", "Eating Out", "Transportation", "Shopping", "Bills", "Other")
     val dateFormatter = DateTimeFormatter.ofPattern("MMM dd, yyyy")
@@ -873,6 +990,21 @@ fun EditExpenseDialog(
                 ) {
                     Text("Date: ${selectedDate.format(dateFormatter)}")
                 }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Pay from earnings",
+                        fontSize = 14.sp
+                    )
+                    Checkbox(
+                        checked = paidFromEarnings,
+                        onCheckedChange = { paidFromEarnings = it }
+                    )
+                }
             }
         },
         confirmButton = {
@@ -885,7 +1017,8 @@ fun EditExpenseDialog(
                                 name = name,
                                 amount = amountDouble,
                                 category = category,
-                                date = selectedDate
+                                date = selectedDate,
+                                paidFromEarnings = paidFromEarnings
                             )
                         )
                     }
@@ -1009,6 +1142,293 @@ fun ExportConfirmationDialog(
             }
         }
     )
+}
+
+@Composable
+fun ChoiceDialog(
+    onDismiss: () -> Unit,
+    onExpenseSelected: () -> Unit,
+    onEarningSelected: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add Item") },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = onExpenseSelected,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("Add Expense")
+                }
+                Button(
+                    onClick = onEarningSelected,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF4CAF50)
+                    )
+                ) {
+                    Text("Add Earning")
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+@Composable
+fun EarningItem(
+    earning: Earning,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = Color(0xFFC8E6C9)  // Less bright green
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = earning.name,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp,
+                    color = Color(0xFF1B5E20)  // Darker text for better contrast
+                )
+                Text(
+                    text = "Earning",
+                    fontSize = 12.sp,
+                    color = Color(0xFF2E7D32)
+                )
+                Text(
+                    text = earning.date.format(DateTimeFormatter.ofPattern("MMM dd")),
+                    fontSize = 10.sp,
+                    color = Color(0xFF2E7D32)
+                )
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "+$${String.format(Locale.US, "%.2f", earning.amount)}",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF1B5E20)  // Darker green for better contrast
+                )
+
+                IconButton(
+                    onClick = onEdit,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Edit,
+                        contentDescription = "Edit Earning",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Delete Earning",
+                        tint = Color.Red
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AddEarningDialog(
+    onDismiss: () -> Unit,
+    onAddEarning: (Earning) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var amount by remember { mutableStateOf("") }
+    var selectedDate by remember { mutableStateOf(LocalDate.now()) }
+    var showDatePicker by remember { mutableStateOf(false) }
+
+    val dateFormatter = DateTimeFormatter.ofPattern("MMM dd, yyyy")
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add Earning") },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Name") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                OutlinedTextField(
+                    value = amount,
+                    onValueChange = { amount = it },
+                    label = { Text("Amount") },
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    prefix = { Text("$") },
+                    singleLine = true
+                )
+
+                OutlinedButton(
+                    onClick = { showDatePicker = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Date: ${selectedDate.format(dateFormatter)}")
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val amountDouble = amount.toDoubleOrNull()
+                    if (name.isNotBlank() && amountDouble != null && amountDouble > 0) {
+                        onAddEarning(
+                            Earning(
+                                name = name,
+                                amount = amountDouble,
+                                date = selectedDate
+                            )
+                        )
+                    }
+                }
+            ) {
+                Text("Add")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+
+    if (showDatePicker) {
+        DatePickerDialog(
+            selectedDate = selectedDate,
+            onDateSelected = { date ->
+                selectedDate = date
+                showDatePicker = false
+            },
+            onDismiss = { showDatePicker = false }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun EditEarningDialog(
+    earning: Earning,
+    onDismiss: () -> Unit,
+    onSave: (Earning) -> Unit
+) {
+    var name by remember { mutableStateOf(earning.name) }
+    var amount by remember { mutableStateOf(earning.amount.toString()) }
+    var selectedDate by remember { mutableStateOf(earning.date) }
+    var showDatePicker by remember { mutableStateOf(false) }
+
+    val dateFormatter = DateTimeFormatter.ofPattern("MMM dd, yyyy")
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Edit Earning") },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Name") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                OutlinedTextField(
+                    value = amount,
+                    onValueChange = { amount = it },
+                    label = { Text("Amount") },
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    prefix = { Text("$") },
+                    singleLine = true
+                )
+
+                OutlinedButton(
+                    onClick = { showDatePicker = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Date: ${selectedDate.format(dateFormatter)}")
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val amountDouble = amount.toDoubleOrNull()
+                    if (name.isNotBlank() && amountDouble != null && amountDouble > 0) {
+                        onSave(
+                            earning.copy(
+                                name = name,
+                                amount = amountDouble,
+                                date = selectedDate
+                            )
+                        )
+                    }
+                }
+            ) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+
+    if (showDatePicker) {
+        DatePickerDialog(
+            selectedDate = selectedDate,
+            onDateSelected = { date ->
+                selectedDate = date
+                showDatePicker = false
+            },
+            onDismiss = { showDatePicker = false }
+        )
+    }
 }
 
 fun exportExpensesToCSV(context: Context, database: BudgetDatabase) {

@@ -51,6 +51,7 @@ fun StatsScreen(
     onBackClick: () -> Unit
 ) {
     val allExpenses = remember { database.getAllExpenses() }
+    val allEarnings = remember { database.getAllEarnings() }
     val allMonthlyData = remember { database.getAllMonthlyData() }
 
     Scaffold(
@@ -80,6 +81,7 @@ fun StatsScreen(
             item {
                 GeneralStatsSection(
                     expenses = allExpenses,
+                    earnings = allEarnings,
                     monthlyData = allMonthlyData
                 )
             }
@@ -101,6 +103,7 @@ fun StatsScreen(
             item {
                 MonthlyComparisonSection(
                     expenses = allExpenses,
+                    earnings = allEarnings,
                     monthlyData = allMonthlyData
                 )
             }
@@ -113,6 +116,7 @@ fun StatsScreen(
             item {
                 YearlyComparisonSection(
                     expenses = allExpenses,
+                    earnings = allEarnings,
                     monthlyData = allMonthlyData
                 )
             }
@@ -128,19 +132,41 @@ fun StatsScreen(
 @Composable
 fun GeneralStatsSection(
     expenses: List<Expense>,
+    earnings: List<Earning>,
     monthlyData: List<MonthlyData>
 ) {
-    val totalSpent = expenses.sumOf { it.amount }
+    // Separate budget expenses from earnings-paid expenses
+    val budgetExpenses = expenses.filter { !it.paidFromEarnings }
+    val earningsPaidExpenses = expenses.filter { it.paidFromEarnings }
+
+    val totalSpentFromBudget = budgetExpenses.sumOf { it.amount }
+    val totalSpentFromEarnings = earningsPaidExpenses.sumOf { it.amount }
+    val totalSpent = totalSpentFromBudget + totalSpentFromEarnings // Total of all expenses
+
+    val totalEarned = earnings.sumOf { it.amount }
+    val netEarnings = totalEarned - totalSpentFromEarnings
+
     val uniqueMonths = expenses.map {
         YearMonth.of(it.date.year, it.date.month)
     }.distinct().size
 
     val avgPerMonth = if (uniqueMonths > 0) totalSpent / uniqueMonths else 0.0
 
-    // Group expenses by month
-    val expensesByMonth = expenses.groupBy {
+    // Group expenses by month (only budget expenses for spending history)
+    val expensesByMonth = budgetExpenses.groupBy {
         YearMonth.of(it.date.year, it.date.month)
     }.mapValues { (_, expenses) -> expenses.sumOf { it.amount } }
+
+    // Group earnings by month (net of expenses paid from earnings)
+    val earningsByMonth = earnings.groupBy {
+        YearMonth.of(it.date.year, it.date.month)
+    }.mapValues { (month, monthEarnings) ->
+        val earnedAmount = monthEarnings.sumOf { it.amount }
+        val spentFromEarnings = expenses.filter {
+            it.paidFromEarnings && YearMonth.of(it.date.year, it.date.month) == month
+        }.sumOf { it.amount }
+        earnedAmount - spentFromEarnings
+    }
 
     val mostExpensiveMonth = expensesByMonth.maxByOrNull { it.value }
     val leastExpensiveMonth = expensesByMonth.minByOrNull { it.value }
@@ -188,6 +214,8 @@ fun GeneralStatsSection(
             )
 
             StatRow(label = "Total Spent (All Time)", value = "$${String.format(Locale.US, "%.2f", totalSpent)}")
+            StatRow(label = "Total Earned (All Time)", value = "$${String.format(Locale.US, "%.2f", totalEarned)}")
+            StatRow(label = "Net Earnings", value = "$${String.format(Locale.US, "%.2f", netEarnings)}")
             StatRow(label = "Total Expenses", value = "${expenses.size}")
             StatRow(label = "Months Tracked", value = "$uniqueMonths")
             StatRow(label = "Average per Month", value = "$${String.format(Locale.US, "%.2f", avgPerMonth)}")
@@ -413,15 +441,30 @@ fun CategoryStatItem(
 @Composable
 fun MonthlyComparisonSection(
     expenses: List<Expense>,
+    earnings: List<Earning>,
     monthlyData: List<MonthlyData>
 ) {
     var isExpanded by remember { mutableStateOf(true) }
 
-    val expensesByMonth = expenses.groupBy {
+    // Only expenses paid from budget (not from earnings)
+    val expensesByMonth = expenses.filter { !it.paidFromEarnings }.groupBy {
         YearMonth.of(it.date.year, it.date.month)
     }.mapValues { (_, expenses) -> expenses.sumOf { it.amount } }
 
-    val sortedMonths = expensesByMonth.keys.sortedDescending()
+    // Net earnings per month (earned - spent from earnings)
+    val earningsByMonth = earnings.groupBy {
+        YearMonth.of(it.date.year, it.date.month)
+    }.mapValues { (month, monthEarnings) ->
+        val earnedAmount = monthEarnings.sumOf { it.amount }
+        val spentFromEarnings = expenses.filter {
+            it.paidFromEarnings && YearMonth.of(it.date.year, it.date.month) == month
+        }.sumOf { it.amount }
+        earnedAmount - spentFromEarnings
+    }
+
+    // Get all months that have either expenses or earnings
+    val allMonths = (expensesByMonth.keys + earningsByMonth.keys).distinct().sortedDescending()
+    val sortedMonths = allMonths
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -460,11 +503,13 @@ fun MonthlyComparisonSection(
                 } else {
                     sortedMonths.forEach { month ->
                         val amount = expensesByMonth[month] ?: 0.0
+                        val earned = earningsByMonth[month] ?: 0.0
                         val monthData = monthlyData.find { it.month == month.toString() }
 
                         MonthStatItem(
                             month = month,
                             spent = amount,
+                            earned = earned,
                             leftover = monthData?.leftoverBudget
                         )
 
@@ -481,15 +526,28 @@ fun MonthlyComparisonSection(
 @Composable
 fun YearlyComparisonSection(
     expenses: List<Expense>,
+    earnings: List<Earning>,
     monthlyData: List<MonthlyData>
 ) {
     var isExpanded by remember { mutableStateOf(false) }
 
-    // Group expenses by year
-    val expensesByYear = expenses.groupBy { it.date.year }
+    // Only expenses paid from budget (not from earnings)
+    val expensesByYear = expenses.filter { !it.paidFromEarnings }.groupBy { it.date.year }
         .mapValues { (_, expenses) -> expenses.sumOf { it.amount } }
 
-    val sortedYears = expensesByYear.keys.sortedDescending()
+    // Group earnings by year (net of expenses paid from earnings)
+    val earningsByYear = earnings.groupBy { it.date.year }
+        .mapValues { (year, yearEarnings) ->
+            val earnedAmount = yearEarnings.sumOf { it.amount }
+            val spentFromEarnings = expenses.filter {
+                it.paidFromEarnings && it.date.year == year
+            }.sumOf { it.amount }
+            earnedAmount - spentFromEarnings
+        }
+
+    // Get all years that have either expenses or earnings
+    val allYears = (expensesByYear.keys + earningsByYear.keys).distinct().sortedDescending()
+    val sortedYears = allYears
 
     // Calculate leftover budget per year
     val leftoverByYear = monthlyData.groupBy {
@@ -533,11 +591,13 @@ fun YearlyComparisonSection(
                 } else {
                     sortedYears.forEach { year ->
                         val amount = expensesByYear[year] ?: 0.0
+                        val earned = earningsByYear[year] ?: 0.0
                         val leftover = leftoverByYear[year]
 
                         YearStatItem(
                             year = year,
                             spent = amount,
+                            earned = earned,
                             leftover = leftover
                         )
 
@@ -555,6 +615,7 @@ fun YearlyComparisonSection(
 fun YearStatItem(
     year: Int,
     spent: Double,
+    earned: Double,
     leftover: Double?
 ) {
     Row(
@@ -562,7 +623,7 @@ fun YearStatItem(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Column {
+        Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = year.toString(),
                 fontWeight = FontWeight.Bold,
@@ -576,12 +637,22 @@ fun YearStatItem(
                 )
             }
         }
-        Text(
-            text = "$${String.format(Locale.US, "%.2f", spent)}",
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Bold,
-            color = Color.Red
-        )
+        Column(horizontalAlignment = Alignment.End) {
+            Text(
+                text = "$${String.format(Locale.US, "%.2f", spent)}",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.Red
+            )
+            if (earned > 0) {
+                Text(
+                    text = "+$${String.format(Locale.US, "%.2f", earned)}",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF2E7D32)
+                )
+            }
+        }
     }
 }
 
@@ -589,6 +660,7 @@ fun YearStatItem(
 fun MonthStatItem(
     month: YearMonth,
     spent: Double,
+    earned: Double,
     leftover: Double?
 ) {
     Row(
@@ -596,7 +668,7 @@ fun MonthStatItem(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Column {
+        Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = month.format(DateTimeFormatter.ofPattern("MMMM yyyy")),
                 fontWeight = FontWeight.Bold,
@@ -610,12 +682,22 @@ fun MonthStatItem(
                 )
             }
         }
-        Text(
-            text = "$${String.format(Locale.US, "%.2f", spent)}",
-            fontSize = 16.sp,
-            fontWeight = FontWeight.Bold,
-            color = Color.Red
-        )
+        Column(horizontalAlignment = Alignment.End) {
+            Text(
+                text = "$${String.format(Locale.US, "%.2f", spent)}",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.Red
+            )
+            if (earned > 0) {
+                Text(
+                    text = "+$${String.format(Locale.US, "%.2f", earned)}",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF2E7D32)
+                )
+            }
+        }
     }
 }
 
