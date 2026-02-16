@@ -40,6 +40,8 @@ import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import org.json.JSONArray
+import org.json.JSONObject
 
 data class Expense(
     val id: String = java.util.UUID.randomUUID().toString(),
@@ -219,7 +221,7 @@ fun BudgetApp(database: BudgetDatabase) {
 
                     NavigationDrawerItem(
                         icon = { Icon(Icons.Default.Share, contentDescription = null) },
-                        label = { Text("Export to CSV") },
+                        label = { Text("Export to JSON") },
                         selected = false,
                         onClick = {
                             scope.launch { drawerState.close() }
@@ -1129,9 +1131,9 @@ fun ExportConfirmationDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Export Expenses") },
+        title = { Text("Export Data") },
         text = {
-            Text("Export all expenses to a CSV file? The file will be saved to your Downloads folder.")
+            Text("Export all data (fixed expenses, expenses, and earnings) to a JSON file? The file will be saved to BudgetronExports/ in your device's internal storage.")
         },
         confirmButton = {
             TextButton(onClick = onConfirm) {
@@ -1436,37 +1438,107 @@ fun EditEarningDialog(
 fun exportExpensesToCSV(context: Context, database: BudgetDatabase) {
     try {
         val expenses = database.getAllExpenses()
+        val fixedExpenses = database.getAllFixedExpenses()
+        val earnings = database.getAllEarnings()
 
-        if (expenses.isEmpty()) {
-            Toast.makeText(context, "No expenses to export", Toast.LENGTH_SHORT).show()
+        if (expenses.isEmpty() && fixedExpenses.isEmpty() && earnings.isEmpty()) {
+            Toast.makeText(context, "No data to export", Toast.LENGTH_SHORT).show()
             return
         }
 
-        // Create CSV content
-        val csvHeader = "ID,Name,Amount,Category,Date\n"
-        val csvContent = StringBuilder(csvHeader)
+        // Create JSON structure
+        val jsonRoot = JSONObject()
 
+        // Export metadata
+        jsonRoot.put("exportDate", LocalDate.now().toString())
+        jsonRoot.put("exportTimestamp", System.currentTimeMillis())
+
+        // Fixed Expenses Array
+        val fixedExpensesArray = JSONArray()
+        fixedExpenses.forEach { expense ->
+            val expenseObj = JSONObject()
+            expenseObj.put("id", expense.id)
+            expenseObj.put("name", expense.name)
+            expenseObj.put("amount", expense.amount)
+            fixedExpensesArray.put(expenseObj)
+        }
+        jsonRoot.put("fixedExpenses", fixedExpensesArray)
+
+        // Regular Expenses Array
+        val expensesArray = JSONArray()
         expenses.forEach { expense ->
-            csvContent.append("\"${expense.id}\",")
-            csvContent.append("\"${expense.name}\",")
-            csvContent.append("${expense.amount},")
-            csvContent.append("\"${expense.category}\",")
-            csvContent.append("\"${expense.date}\"\n")
+            val expenseObj = JSONObject()
+            expenseObj.put("id", expense.id)
+            expenseObj.put("name", expense.name)
+            expenseObj.put("amount", expense.amount)
+            expenseObj.put("category", expense.category)
+            expenseObj.put("date", expense.date.toString())
+            expenseObj.put("paidFromEarnings", expense.paidFromEarnings)
+            expensesArray.put(expenseObj)
+        }
+        jsonRoot.put("expenses", expensesArray)
+
+        // Earnings Array
+        val earningsArray = JSONArray()
+        earnings.forEach { earning ->
+            val earningObj = JSONObject()
+            earningObj.put("id", earning.id)
+            earningObj.put("name", earning.name)
+            earningObj.put("amount", earning.amount)
+            earningObj.put("date", earning.date.toString())
+            earningsArray.put(earningObj)
+        }
+        jsonRoot.put("earnings", earningsArray)
+
+        // Add summary
+        val summary = JSONObject()
+        summary.put("totalFixedExpenses", fixedExpenses.size)
+        summary.put("totalExpenses", expenses.size)
+        summary.put("totalEarnings", earnings.size)
+        summary.put("totalItems", fixedExpenses.size + expenses.size + earnings.size)
+        jsonRoot.put("summary", summary)
+
+        // Create BudgetronExports folder in internal storage
+        val storageDir = Environment.getExternalStorageDirectory()
+        val exportDir = File(storageDir, "BudgetronExports")
+
+        // Create the directory if it doesn't exist
+        if (!exportDir.exists()) {
+            exportDir.mkdirs()
         }
 
-        // Save to Downloads folder
-        val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-        val timestamp = System.currentTimeMillis()
-        val fileName = "budgetron_expenses_$timestamp.csv"
-        val file = File(downloadsDir, fileName)
+        // Use current date as filename
+        val currentDate = LocalDate.now()
+        val dateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
+        val dateString = currentDate.format(dateFormatter)
+
+        // If file with same date exists, add a time suffix
+        var fileName = "$dateString.json"
+        var file = File(exportDir, fileName)
+        var counter = 1
+        while (file.exists()) {
+            val timeFormatter = DateTimeFormatter.ofPattern("HHmmss")
+            val timeString = java.time.LocalTime.now().format(timeFormatter)
+            fileName = "${dateString}_$timeString.json"
+            file = File(exportDir, fileName)
+            counter++
+            if (counter > 100) break // Safety check to avoid infinite loop
+        }
 
         FileOutputStream(file).use { outputStream ->
-            outputStream.write(csvContent.toString().toByteArray())
+            outputStream.write(jsonRoot.toString(2).toByteArray()) // Pretty print with 2 space indent
         }
 
+        val totalItems = expenses.size + fixedExpenses.size + earnings.size
         Toast.makeText(
             context,
-            "Exported ${expenses.size} expenses to Downloads/$fileName",
+            "✓ Export Successful!\n\n" +
+                    "Saved to: BudgetronExports/$fileName\n\n" +
+                    "Exported:\n" +
+                    "• ${fixedExpenses.size} fixed expense${if (fixedExpenses.size != 1) "s" else ""}\n" +
+                    "• ${expenses.size} expense${if (expenses.size != 1) "s" else ""}\n" +
+                    "• ${earnings.size} earning${if (earnings.size != 1) "s" else ""}\n" +
+                    "Total: $totalItems item${if (totalItems != 1) "s" else ""}",
             Toast.LENGTH_LONG
         ).show()
 
