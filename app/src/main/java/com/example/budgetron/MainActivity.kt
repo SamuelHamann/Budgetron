@@ -444,10 +444,12 @@ fun BudgetApp(database: BudgetDatabase) {
 
 @Composable
 fun CategoryAnalysis(expenses: List<Expense>) {
-    val totalSpent = expenses.sumOf { it.amount }
+    // Filter out expenses paid from earnings
+    val budgetExpenses = expenses.filter { !it.paidFromEarnings }
+    val totalSpent = budgetExpenses.sumOf { it.amount }
 
     // Group expenses by category
-    val expensesByCategory = expenses.groupBy { it.category }
+    val expensesByCategory = budgetExpenses.groupBy { it.category }
 
     // Create sorted list with totals
     val categoryData = expensesByCategory.map { (category, categoryExpenses) ->

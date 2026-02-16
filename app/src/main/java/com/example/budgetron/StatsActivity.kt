@@ -95,6 +95,15 @@ fun StatsScreen(
                 CategoryBreakdownSection(expenses = allExpenses)
             }
 
+            // Average Category Breakdown Section
+            item {
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            item {
+                AverageCategoryBreakdownSection(expenses = allExpenses)
+            }
+
             // Monthly Comparison Section
             item {
                 Spacer(modifier = Modifier.height(8.dp))
@@ -171,13 +180,13 @@ fun GeneralStatsSection(
     val mostExpensiveMonth = expensesByMonth.maxByOrNull { it.value }
     val leastExpensiveMonth = expensesByMonth.minByOrNull { it.value }
 
-    // Category with most spending
-    val categorySpending = expenses.groupBy { it.category }
+    // Category with most spending (only budget expenses)
+    val categorySpending = budgetExpenses.groupBy { it.category }
         .mapValues { (_, expenses) -> expenses.sumOf { it.amount } }
     val topCategory = categorySpending.maxByOrNull { it.value }
 
-    // Average expense amount
-    val avgExpenseAmount = if (expenses.isNotEmpty()) totalSpent / expenses.size else 0.0
+    // Average expense amount (only budget expenses)
+    val avgExpenseAmount = if (budgetExpenses.isNotEmpty()) totalSpentFromBudget / budgetExpenses.size else 0.0
 
     // Get current month
     val currentMonth = YearMonth.now().toString()
@@ -331,9 +340,11 @@ fun StatRow(label: String, value: String) {
 
 @Composable
 fun CategoryBreakdownSection(expenses: List<Expense>) {
-    val totalSpent = expenses.sumOf { it.amount }
+    // Filter out expenses paid from earnings
+    val budgetExpenses = expenses.filter { !it.paidFromEarnings }
+    val totalSpent = budgetExpenses.sumOf { it.amount }
 
-    val categoryTotals = expenses.groupBy { it.category }
+    val categoryTotals = budgetExpenses.groupBy { it.category }
         .mapValues { (_, expenses) -> expenses.sumOf { it.amount } }
         .toList()
         .sortedByDescending { it.second }
@@ -365,6 +376,83 @@ fun CategoryBreakdownSection(expenses: List<Expense>) {
                     CategoryStatItem(
                         category = category,
                         amount = amount,
+                        percentage = percentage
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AverageCategoryBreakdownSection(expenses: List<Expense>) {
+    // Filter out expenses paid from earnings
+    val budgetExpenses = expenses.filter { !it.paidFromEarnings }
+
+    // Get current month to exclude it
+    val currentMonth = YearMonth.now()
+
+    // Filter out expenses from current month
+    val pastMonthExpenses = budgetExpenses.filter {
+        YearMonth.of(it.date.year, it.date.month) != currentMonth
+    }
+
+    // Calculate number of unique months with expenses (excluding current month)
+    val uniqueMonths = pastMonthExpenses.map {
+        YearMonth.of(it.date.year, it.date.month)
+    }.distinct().size
+
+    if (uniqueMonths == 0) {
+        return
+    }
+
+    // Calculate total spent per category
+    val categoryTotals = pastMonthExpenses.groupBy { it.category }
+        .mapValues { (_, expenses) -> expenses.sumOf { it.amount } }
+
+    // Calculate average per month for each category
+    val categoryAverages = categoryTotals.mapValues { (_, total) ->
+        total / uniqueMonths
+    }.toList()
+        .sortedByDescending { it.second }
+
+    val totalAverageSpent = categoryAverages.sumOf { it.second }
+
+    Card(
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Text(
+                text = "Average Category Breakdown",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+
+            Text(
+                text = "Average spending per month across $uniqueMonths past month${if (uniqueMonths > 1) "s" else ""} (excluding current month)",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 16.dp)
+            )
+
+            if (categoryAverages.isEmpty()) {
+                Text(
+                    text = "No expenses recorded yet",
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                categoryAverages.forEach { (category, avgAmount) ->
+                    val percentage = if (totalAverageSpent > 0) (avgAmount / totalAverageSpent) * 100 else 0.0
+                    CategoryStatItem(
+                        category = category,
+                        amount = avgAmount,
                         percentage = percentage
                     )
                     Spacer(modifier = Modifier.height(12.dp))
